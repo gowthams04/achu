@@ -6,12 +6,10 @@ const QRCode = require('qrcode');
 const path = require('path');
 const { google } = require('googleapis');
 
-// Define the path for the database. Use the environment variable on Render, or a local file.
-const dbPath = process.env.RENDER_DISK_MOUNT_PATH ? path.join(process.env.RENDER_DISK_MOUNT_PATH, 'database.db') : './database.db';
-
 const app = express();
-const db = new sqlite3.Database(dbPath);
-
+// SQLite is no longer the primary database for users/logs, but we can keep it for future use or remove it.
+// For now, we will comment out the database initialization that creates a default admin.
+/*
 const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key';
 app.use(bodyParser.json());
 app.use(express.static('public'));
@@ -34,6 +32,11 @@ db.serialize(() => {
         }
     });
 });
+*/
+const JWT_SECRET = process.env.JWT_SECRET || 'your-default-super-secret-key';
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
 // --- MIDDLEWARE ---
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -59,104 +62,96 @@ const authorizeRoles = (...allowedRoles) => {
 // --- AUTHENTICATION ---
 app.post('/api/login', (req, res) => {
     const { mobile } = req.body;
-    db.get(`SELECT * FROM users WHERE mobile = ?`, [mobile], (err, user) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!user) return res.status(404).json({ error: "User not registered" });
+    if (!mobile) {
+        return res.status(400).json({ error: "Mobile number is required." });
+    }
 
-        // On successful login, generate a JWT
+    readFromGoogleSheet('Users!A:F').then(users => {
+        // Assuming 'Mobile' is in column C (index 2)
+        const userRow = users.find(row => row[2] === mobile);
+
+        if (!userRow) {
+            return res.status(404).json({ error: "User not registered" });
+        }
+
+        const user = {
+            id: userRow[0],         // UserID in column A
+            name: userRow[1],       // Name in column B
+            mobile: userRow[2],     // Mobile in column C
+            role: userRow[3],       // Role in column D
+            base_charge: parseFloat(userRow[4]) || 0, // BaseCharge in column E
+            rate_per_unit: parseFloat(userRow[5]) || 0, // RatePerUnit in column F
+        };
+
         const accessToken = jwt.sign({ id: user.id, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '1d' });
+        res.json({ success: true, token: accessToken, user });
 
-        res.json({ 
-            success: true, 
-            token: accessToken,
-            user: { id: user.id, name: user.name, role: user.role, mobile: user.mobile } 
-        });
-    });
+    }).catch(err => res.status(500).json({ error: "Failed to access user data." }));
 });
 
-app.post('/api/register-user', authenticateToken, authorizeRoles('admin'), (req, res) => {
-    const { mobile, name, role, service_range, rate_per_unit, base_charge } = req.body;
-    
-    db.run(`INSERT INTO users (mobile, name, role) VALUES (?, ?, ?)`, [mobile, name, role || 'user'], function(err) {
-        if (err) return res.status(400).json({ error: "Mobile number already exists" });
-        const userId = this.lastID;
+app.post('/api/register-user', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+    const { mobile, name, role, base_charge, rate_per_unit } = req.body;
+    const newUserId = `user_${Date.now()}`; // Generate a unique user ID
 
-        if (role === 'user' && service_range) {
-            db.run(
-                `INSERT INTO pricing_rules (user_id, service_range, rate_per_unit, base_charge) VALUES (?, ?, ?, ?)`,
-                [userId, service_range, rate_per_unit, base_charge]
-            );
-        }
-        res.json({ success: true, userId });
-    });
+    const newUserRow = [newUserId, name, mobile, role, base_charge, rate_per_unit];
+
+    try {
+        await appendToGoogleSheet('Users!A:F', [newUserRow]);
+        res.json({ success: true, userId: newUserId });
+    } catch (error) {
+        res.status(500).json({ error: "Failed to create user." });
+    }
 });
 
 // --- SUB-ADMIN: LOG SERVICE COUNT ---
-app.post('/api/service/add', authenticateToken, authorizeRoles('subadmin', 'admin'), (req, res) => {
+app.post('/api/service/add', authenticateToken, authorizeRoles('subadmin', 'admin'), async (req, res) => {
     const { user_id, service_count, service_date } = req.body;
 
-    // Fetch user and pricing details in parallel
-    const userQuery = new Promise((resolve, reject) => {
-        db.get(`SELECT name FROM users WHERE id = ?`, [user_id], (err, user) => {
-            if (err || !user) return reject(new Error("User not found."));
-            resolve(user);
-        });
-    });
+    try {
+        const users = await readFromGoogleSheet('Users!A:F');
+        const userRow = users.find(row => row[0] === user_id);
 
-    const pricingQuery = new Promise((resolve, reject) => {
-        db.get(`SELECT * FROM pricing_rules WHERE user_id = ?`, [user_id], (err, rule) => {
-            if (err || !rule) return reject(new Error("Pricing rule not set for this user."));
-            resolve(rule);
-        });
-    });
+        if (!userRow) {
+            return res.status(404).json({ error: "User not found." });
+        }
 
-    Promise.all([userQuery, pricingQuery]).then(async ([user, rule]) => {
-        if (err || !rule) return res.status(400).json({ error: "Pricing rule not set for this user." });
+        const userName = userRow[1];
+        const baseCharge = parseFloat(userRow[4]) || 0;
+        const ratePerUnit = parseFloat(userRow[5]) || 0;
 
-        // Pricing logic: Base charge + (Count * Rate per unit)
-        const calculated_amount = rule.base_charge + (service_count * rule.rate_per_unit);
+        const calculated_amount = baseCharge + (service_count * ratePerUnit);
 
-        // Append data to Google Sheet
-        await appendToGooglSheet([service_date, user.name, user_id, service_count, calculated_amount]);
-
+        await appendToGoogleSheet('ServiceLogs!A:E', [[service_date, userName, user_id, service_count, calculated_amount]]);
         res.json({ success: true, amount: calculated_amount });
-    }).catch(error => res.status(400).json({ error: error.message }));
+
+    } catch (error) {
+        res.status(500).json({ error: "Failed to log service." });
+    }
 });
 
 // --- USER DASHBOARD: FETCH SUMMARY & GENERATE PAY QR ---
 app.get('/api/user/summary/:userId', authenticateToken, async (req, res) => {
     const userId = req.params.userId;
 
-    const query = `
-        SELECT 
-            (SELECT COALESCE(SUM(calculated_amount), 0) FROM service_logs WHERE user_id = ?) as total_service_cost,
-            (SELECT COALESCE(SUM(service_count), 0) FROM service_logs WHERE user_id = ?) as total_services,
-            (SELECT COALESCE(SUM(amount_verified), 0) FROM payment_requests WHERE user_id = ? AND status LIKE '%verified%') as total_paid
-    `;
-
     try {
-        // Fetch service data from Google Sheet
-        const sheetData = await readFromGoogleSheet();
-        const userServices = sheetData.filter(row => row[2] === userId); // Filter by UserID in column C
+        const [serviceLogs, payments] = await Promise.all([
+            readFromGoogleSheet('ServiceLogs!A:E'),
+            readFromGoogleSheet('Payments!A:F')
+        ]);
 
-        let total_services = 0;
-        let total_service_cost = 0;
+        const userServices = serviceLogs.filter(row => row[2] === userId);
+        const userPayments = payments.filter(row => row[1] === userId && row[4].includes('verified'));
 
-        userServices.forEach(row => {
-            total_services += parseInt(row[3], 10) || 0; // ServiceCount in column D
-            total_service_cost += parseFloat(row[4]) || 0; // CalculatedAmount in column E
-        });
-
-        // Fetch payment data from SQLite
-        const paymentsRow = await new Promise((resolve, reject) => db.get(`SELECT COALESCE(SUM(amount_verified), 0) as total_paid FROM payment_requests WHERE user_id = ? AND status LIKE '%verified%'`, [userId], (err, row) => err ? reject(err) : resolve(row)));
-        const total_paid = paymentsRow.total_paid;
+        const total_services = userServices.reduce((sum, row) => sum + (parseInt(row[3], 10) || 0), 0);
+        const total_service_cost = userServices.reduce((sum, row) => sum + (parseFloat(row[4]) || 0), 0);
+        const total_paid = userPayments.reduce((sum, row) => sum + (parseFloat(row[3]) || 0), 0);
         
         const balance_due = total_service_cost - total_paid;
 
         res.json({ total_services, total_cost: total_service_cost, total_paid, balance_due: balance_due > 0 ? balance_due : 0 });
 
     } catch (err) {
-        if (err) return res.status(500).json({ error: err.message });
+        res.status(500).json({ error: "Failed to calculate summary." });
     }
 });
 
@@ -175,15 +170,15 @@ app.post('/api/user/generate-qr', authenticateToken, authorizeRoles('user'), asy
 
 // User submits payment claim
 app.post('/api/user/pay', authenticateToken, authorizeRoles('user'), (req, res) => {
-    const { user_id, amount_submitted } = req.body;
-    db.run(
-        `INSERT INTO payment_requests (user_id, amount_submitted) VALUES (?, ?)`,
-        [user_id, amount_submitted],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true, requestId: this.lastID });
-        }
-    );
+    const { amount_submitted } = req.body;
+    const user_id = req.user.id;
+    const payment_id = `pay_${Date.now()}`;
+    const payment_date = new Date().toISOString();
+    const newPaymentRow = [payment_id, user_id, amount_submitted, 0, 'pending', payment_date];
+
+    appendToGoogleSheet('Payments!A:F', [newPaymentRow])
+        .then(() => res.json({ success: true, requestId: payment_id }))
+        .catch(err => res.status(500).json({ error: "Failed to submit payment request." }));
 });
 
 // --- ADMIN VERIFICATION & EDITING ---
@@ -191,59 +186,67 @@ app.get('/api/admin/pending-payments', authenticateToken, authorizeRoles('admin'
     db.all(
         `SELECT p.*, u.name, u.mobile FROM payment_requests p JOIN users u ON p.user_id = u.id WHERE p.status = 'pending'`,
         [],
-        (err, rows) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json(rows);
+        (err, rows) => { // This part needs to be migrated to Google Sheets
+            readFromGoogleSheet('Payments!A:F').then(payments => {
+                const pending = payments.filter(p => p[4] === 'pending');
+                res.json(pending);
+            }).catch(err => res.status(500).json({ error: "Failed to fetch pending payments." }));
         }
     );
 });
 
-app.post('/api/admin/verify-payment', authenticateToken, authorizeRoles('admin'), (req, res) => {
+app.post('/api/admin/verify-payment', authenticateToken, authorizeRoles('admin'), async (req, res) => {
     const { request_id, verified_amount, action } = req.body; // action: 'approve' or 'edit'
 
     const status = action === 'edit' ? 'edited_and_verified' : 'verified';
 
-    db.run(
-        `UPDATE payment_requests SET amount_verified = ?, status = ?, verified_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [verified_amount, status, request_id],
-        function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true, message: "Payment verified and balance updated." });
-        }
-    );
+    // Updating a sheet is complex. We need to find the row, then update it.
+    // This is a simplified example. A robust implementation would be more complex.
+    res.status(501).json({ error: "Payment verification via Google Sheets is not fully implemented." });
 });
 
-// --- GOOGLE SHEETS INTEGRATION ---
-app.get('/api/sheet-data', authenticateToken, async (req, res) => {
+// --- GOOGLE SHEETS HELPER FUNCTIONS ---
+const SPREADSHEET_ID = '1_RufWFvAcnwE7Md3_EJPR4w0EK7NlfNJSypE6boz3qs';
+
+async function getGoogleAuth() {
+    return new google.auth.GoogleAuth({
+        keyFile: path.join(__dirname, 'credentials.json'),
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+}
+
+async function readFromGoogleSheet(range) {
     try {
-        const auth = new google.auth.GoogleAuth({
-            // IMPORTANT: Create a 'credentials.json' file from your Google Cloud Service Account
-            keyFile: path.join(__dirname, 'credentials.json'),
-            scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-        });
-
+        const auth = await getGoogleAuth();
         const sheets = google.sheets({ version: 'v4', auth });
-
-        // IMPORTANT: Replace with your Google Sheet ID and the desired range
-        const spreadsheetId = 'YOUR_SPREADSHEET_ID';
-        const range = 'Sheet1!A:D'; // Example: Read columns A to D from Sheet1
-
         const response = await sheets.spreadsheets.values.get({
-            spreadsheetId,
+            spreadsheetId: SPREADSHEET_ID,
             range,
         });
-
-        const rows = response.data.values;
-        if (rows.length) {
-            res.json({ success: true, data: rows });
-        } else {
-            res.json({ success: true, data: [], message: 'No data found.' });
-        }
+        return response.data.values || [];
     } catch (err) {
-        console.error('The API returned an error: ' + err);
-        res.status(500).json({ error: 'Failed to fetch data from Google Sheet.' });
+        console.error(`Error reading from Google Sheet range ${range}:`, err);
+        throw new Error('Failed to read from Google Sheet.');
     }
-});
+}
+
+async function appendToGoogleSheet(range, values) {
+    try {
+        const auth = await getGoogleAuth();
+        const sheets = google.sheets({ version: 'v4', auth });
+        await sheets.spreadsheets.values.append({
+            spreadsheetId: SPREADSHEET_ID,
+            range,
+            valueInputOption: 'USER_ENTERED',
+            resource: {
+                values,
+            },
+        });
+    } catch (err) {
+        console.error(`Error appending to Google Sheet range ${range}:`, err);
+        throw new Error('Failed to save to Google Sheet.');
+    }
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

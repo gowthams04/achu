@@ -3,10 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <title>Service Tracker & Payment System</title>
-    <!-- Google Platform Library -->
-    <script src="https://apis.google.com/js/platform.js" async defer></script>
-    <!-- Add your Google Client ID here -->
-    <meta name="google-signin-client_id" content="YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,9 +13,9 @@
         </div>
 
         <div id="login-box">
-            <h3>Login</h3>
-            <!-- Google Sign-In Button -->
-            <div id="g-signin2" class="g-signin2"></div>
+            <h2>Service Management Login</h2>
+            <input type="text" id="mobile" placeholder="Enter Mobile Number">
+            <button onclick="login()">Login</button>
         </div>
 
         <div id="dashboard" style="display:none;">
@@ -49,11 +45,6 @@
 
             <!-- Admin View -->
             <div id="admin-view" class="role-section">
-                <h4>Data from Google Sheet</h4>
-                <button onclick="fetchSheetData()">Refresh Sheet Data</button>
-                <div id="sheet-data-container">
-                    <!-- Data will be rendered here as a table -->
-                </div>
                 <h4>Verify Payment Requests</h4>
                 <div id="pending-payments-list"></div>
                 <hr>
