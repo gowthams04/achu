@@ -15,18 +15,6 @@ CREATE TABLE IF NOT EXISTS pricing_rules (
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
-CREATE TABLE IF NOT EXISTS service_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    subadmin_id INTEGER NOT NULL,
-    service_count INTEGER NOT NULL,
-    calculated_amount REAL NOT NULL,
-    service_date DATE NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(subadmin_id) REFERENCES users(id)
-);
-
 CREATE TABLE IF NOT EXISTS payment_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -39,5 +27,4 @@ CREATE TABLE IF NOT EXISTS payment_requests (
 );
 
 -- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_service_logs_user_id ON service_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_payment_requests_user_id ON payment_requests(user_id);

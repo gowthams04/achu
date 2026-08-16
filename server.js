@@ -93,28 +93,38 @@ app.post('/api/register-user', authenticateToken, authorizeRoles('admin'), (req,
 
 // --- SUB-ADMIN: LOG SERVICE COUNT ---
 app.post('/api/service/add', authenticateToken, authorizeRoles('subadmin', 'admin'), (req, res) => {
-    const { user_id, subadmin_id, service_count, service_date } = req.body;
+    const { user_id, service_count, service_date } = req.body;
 
-    // Fetch user pricing rules set by Admin
-    db.get(`SELECT * FROM pricing_rules WHERE user_id = ?`, [user_id], (err, rule) => {
+    // Fetch user and pricing details in parallel
+    const userQuery = new Promise((resolve, reject) => {
+        db.get(`SELECT name FROM users WHERE id = ?`, [user_id], (err, user) => {
+            if (err || !user) return reject(new Error("User not found."));
+            resolve(user);
+        });
+    });
+
+    const pricingQuery = new Promise((resolve, reject) => {
+        db.get(`SELECT * FROM pricing_rules WHERE user_id = ?`, [user_id], (err, rule) => {
+            if (err || !rule) return reject(new Error("Pricing rule not set for this user."));
+            resolve(rule);
+        });
+    });
+
+    Promise.all([userQuery, pricingQuery]).then(async ([user, rule]) => {
         if (err || !rule) return res.status(400).json({ error: "Pricing rule not set for this user." });
 
         // Pricing logic: Base charge + (Count * Rate per unit)
         const calculated_amount = rule.base_charge + (service_count * rule.rate_per_unit);
 
-        db.run(
-            `INSERT INTO service_logs (user_id, subadmin_id, service_count, calculated_amount, service_date) VALUES (?, ?, ?, ?, ?)`,
-            [user_id, subadmin_id, service_count, calculated_amount, service_date],
-            function(err) {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ success: true, logId: this.lastID, amount: calculated_amount });
-            }
-        );
-    });
+        // Append data to Google Sheet
+        await appendToGooglSheet([service_date, user.name, user_id, service_count, calculated_amount]);
+
+        res.json({ success: true, amount: calculated_amount });
+    }).catch(error => res.status(400).json({ error: error.message }));
 });
 
 // --- USER DASHBOARD: FETCH SUMMARY & GENERATE PAY QR ---
-app.get('/api/user/summary/:userId', authenticateToken, (req, res) => {
+app.get('/api/user/summary/:userId', authenticateToken, async (req, res) => {
     const userId = req.params.userId;
 
     const query = `
@@ -124,17 +134,30 @@ app.get('/api/user/summary/:userId', authenticateToken, (req, res) => {
             (SELECT COALESCE(SUM(amount_verified), 0) FROM payment_requests WHERE user_id = ? AND status LIKE '%verified%') as total_paid
     `;
 
-    db.get(query, [userId, userId, userId], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        
-        const balance_due = row.total_service_cost - row.total_paid;
-        res.json({
-            total_services: row.total_services,
-            total_cost: row.total_service_cost,
-            total_paid: row.total_paid,
-            balance_due: balance_due > 0 ? balance_due : 0
+    try {
+        // Fetch service data from Google Sheet
+        const sheetData = await readFromGoogleSheet();
+        const userServices = sheetData.filter(row => row[2] === userId); // Filter by UserID in column C
+
+        let total_services = 0;
+        let total_service_cost = 0;
+
+        userServices.forEach(row => {
+            total_services += parseInt(row[3], 10) || 0; // ServiceCount in column D
+            total_service_cost += parseFloat(row[4]) || 0; // CalculatedAmount in column E
         });
-    });
+
+        // Fetch payment data from SQLite
+        const paymentsRow = await new Promise((resolve, reject) => db.get(`SELECT COALESCE(SUM(amount_verified), 0) as total_paid FROM payment_requests WHERE user_id = ? AND status LIKE '%verified%'`, [userId], (err, row) => err ? reject(err) : resolve(row)));
+        const total_paid = paymentsRow.total_paid;
+        
+        const balance_due = total_service_cost - total_paid;
+
+        res.json({ total_services, total_cost: total_service_cost, total_paid, balance_due: balance_due > 0 ? balance_due : 0 });
+
+    } catch (err) {
+        if (err) return res.status(500).json({ error: err.message });
+    }
 });
 
 // Dynamic UPI QR Code Generator
