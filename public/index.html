@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Service Tracker & Payment System</title>
+    <!-- Google Platform Library -->
+    <script src="https://apis.google.com/js/platform.js" async defer></script>
+    <!-- Add your Google Client ID here -->
+    <meta name="google-signin-client_id" content="YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>Service Management</h2>
+            <button id="logout-btn" style="display:none;" onclick="logout()">Logout</button>
+        </div>
+
+        <div id="login-box">
+            <h3>Login</h3>
+            <!-- Google Sign-In Button -->
+            <div id="g-signin2" class="g-signin2"></div>
+        </div>
+
+        <div id="dashboard" style="display:none;">
+            <h3 id="welcome-msg"></h3>
+
+            <!-- User View -->
+            <div id="user-view" class="role-section">
+                <h4>Weekly / Total Service Summary</h4>
+                <div id="summary-cards"></div>
+                
+                <hr>
+                <h4>Pay Service Due</h4>
+                <input type="number" id="pay-amount" placeholder="Enter amount to pay">
+                <button onclick="generateQR()">Pay Now (Generate QR)</button>
+                <div id="qr-container"></div>
+                <button id="confirm-pay-btn" style="display:none;" onclick="submitPayment()">I Have Paid</button>
+            </div>
+
+            <!-- SubAdmin View -->
+            <div id="subadmin-view" class="role-section">
+                <h4>Log Daily Service Count</h4>
+                <input type="number" id="target-user-id" placeholder="User ID">
+                <input type="number" id="service-count" placeholder="Service Count">
+                <input type="date" id="service-date">
+                <button onclick="logService()">Submit Service</button>
+            </div>
+
+            <!-- Admin View -->
+            <div id="admin-view" class="role-section">
+                <h4>Data from Google Sheet</h4>
+                <button onclick="fetchSheetData()">Refresh Sheet Data</button>
+                <div id="sheet-data-container">
+                    <!-- Data will be rendered here as a table -->
+                </div>
+                <h4>Verify Payment Requests</h4>
+                <div id="pending-payments-list"></div>
+                <hr>
+                <h4>Create New User / Sub-Admin</h4>
+                <div id="create-user-form">
+                    <input type="text" id="new-user-name" placeholder="Full Name">
+                    <input type="text" id="new-user-mobile" placeholder="Mobile Number">
+                    <select id="new-user-role" onchange="togglePricingFields()">
+                        <option value="user">User</option>
+                        <option value="subadmin">Sub-Admin</option>
+                    </select>
+
+                    <div id="pricing-fields">
+                        <p><strong>Pricing Rules (for 'User' role only)</strong></p>
+                        <input type="text" id="new-user-service-range" placeholder="Service Range (e.g., 100-300)">
+                        <input type="number" id="new-user-rate" placeholder="Rate per Unit">
+                        <input type="number" id="new-user-base-charge" placeholder="Base Charge">
+                    </div>
+
+                    <button onclick="createUser()">Create User</button>
+                    <p id="create-user-error" class="error-msg"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

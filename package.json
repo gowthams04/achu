@@ -1,0 +1,21 @@
+{
+  "name": "achu-service-tracker",
+  "version": "1.0.0",
+  "description": "A full-stack web application for tracking services and payments.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.19.2",
+    "googleapis": "^174.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "qrcode": "^1.5.3",
+    "sqlite3": "^5.1.7"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
